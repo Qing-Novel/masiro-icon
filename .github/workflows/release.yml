@@ -1,4 +1,4 @@
-name: Masiro Icon Multiplatform Build
+name: Release Build Manual
 
 on:
   pull_request:
