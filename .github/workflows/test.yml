@@ -1,0 +1,224 @@
+name: Test Build
+
+on:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      build_android:
+        description: 'Build Android platform artifacts.'
+        required: true
+        type: boolean
+        default: true
+      build_linux:
+        description: 'Build Linux platform artifacts.'
+        required: true
+        type: boolean
+        default: true
+      build_windows:
+        description: 'Build Windows platform artifacts.'
+        required: true
+        type: boolean
+        default: false
+      build_macos:
+        description: 'Build macOS platform artifacts.'
+        required: true
+        type: boolean
+        default: false
+      build_ios:
+        description: 'Build iOS platform artifacts.'
+        required: true
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Dry run, do NOT upload artifacts.'
+        required: true
+        type: boolean
+        default: true
+
+env:
+  FLUTTER_VERSION: "3.24.5"
+
+jobs:
+  # ------------------------------------------------------------------
+  # Linux
+  # ------------------------------------------------------------------
+  build-linux:
+    name: Build Linux
+    if: ${{ github.event_name == 'pull_request' || inputs.build_linux }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libayatana-appindicator3-dev
+      - run: flutter clean
+      - run: flutter pub get
+      - name: Build Linux
+        run: flutter build linux --release
+      - name: Pre Packing
+        run: |
+          pushd build/linux/x64/release/
+          mv bundle masiro
+          popd
+      - name: Pack Linux tarball
+        uses: thedoctor0/zip-release@master
+        with:
+          type: "tar"
+          filename: masiro-linux.tar.gz
+          directory: build/linux/x64/release/
+          path: masiro
+      - name: Upload Linux artifacts
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tarball
+          path: build/linux/x64/release/masiro-linux.tar.gz
+
+  # ------------------------------------------------------------------
+  # Android (使用 KEYSTORE / KEY_PROPERTIES)
+  # ------------------------------------------------------------------
+  build-android:
+    name: Build Android
+    if: ${{ github.event_name == 'pull_request' || inputs.build_android }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Setup Android signing
+        run: |
+          echo "${{ secrets.KEYSTORE }}" | base64 --decode > android/app/masiro-release.jks
+          echo "${{ secrets.KEY_PROPERTIES }}" > android/key.properties
+      - run: flutter clean
+      - run: flutter pub get
+      - name: Build Android
+        run: flutter build apk --release --split-per-abi --no-tree-shake-icons
+      - name: Pack Android apk
+        run: |
+          pushd build/app/outputs/flutter-apk/
+          mv app-arm64-v8a-release.apk masiro-arm64_v8a.apk
+          mv app-armeabi-v7a-release.apk masiro-armeabi_v7a.apk
+          popd
+      - name: Upload Android artifacts
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: |
+            build/app/outputs/flutter-apk/masiro-arm64_v8a.apk
+            build/app/outputs/flutter-apk/masiro-armeabi_v7a.apk
+
+  # ------------------------------------------------------------------
+  # Windows (固定 windows-2022 以匹配 VS 2022 生成器)
+  # ------------------------------------------------------------------
+  build-windows:
+    name: Build Windows
+    if: ${{ github.event_name == 'pull_request' || inputs.build_windows }}
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - name: Regenerate Windows platform files
+        run: flutter create --platforms=windows --project-name masiro_icon .
+      - run: flutter clean
+      - run: flutter pub get
+      - name: Build Windows
+        run: flutter build windows --release
+      - name: Pre Packing
+        shell: pwsh
+        run: |
+          cd build/windows/x64/runner
+          Rename-Item Release masiro
+          cd ../../../../
+      - name: Pack Windows tarball
+        uses: thedoctor0/zip-release@master
+        with:
+          type: "zip"
+          filename: masiro-windows.zip
+          directory: build/windows/x64/runner
+          path: masiro
+      - name: Upload Windows artifacts
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: build/windows/x64/runner/masiro-windows.zip
+
+  # ------------------------------------------------------------------
+  # macOS + iOS (同一台 macos-latest)
+  # ------------------------------------------------------------------
+  build-macos-and-ios:
+    name: Build MacOS and iOS
+    if: ${{ github.event_name == 'pull_request' || inputs.build_macos || inputs.build_ios }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Ensure platform files
+        run: |
+          flutter create --platforms=macos,ios --project-name masiro_icon .
+          flutter clean
+          flutter pub get
+
+      # ---------- macOS ----------
+      - name: Build MacOS
+        if: ${{ github.event_name == 'pull_request' || inputs.build_macos }}
+        run: flutter build macos --release --no-tree-shake-icons
+      - name: Packing MacOS dmg
+        if: ${{ github.event_name == 'pull_request' || inputs.build_macos }}
+        run: |
+          brew install python-setuptools
+          npm install -g appdmg
+          APP_PATH=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -n 1)
+          echo "Found app: $APP_PATH"
+          cat > appdmg.json <<EOF
+          {
+            "title": "masiro",
+            "contents": [
+              { "x": 448, "y": 344, "type": "link", "path": "/Applications" },
+              { "x": 192, "y": 344, "type": "file", "path": "$APP_PATH" }
+            ]
+          }
+          EOF
+          appdmg appdmg.json build/masiro-universal.dmg
+      - name: Upload MacOS artifacts
+        if: ${{ github.event_name != 'pull_request' && inputs.build_macos && !inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: build/masiro-universal.dmg
+
+      # ---------- iOS ----------
+      - name: Build iOS ipa
+        if: ${{ github.event_name == 'pull_request' || inputs.build_ios }}
+        run: flutter build ios --release --no-codesign --no-tree-shake-icons
+      - name: Packing iOS
+        if: ${{ github.event_name == 'pull_request' || inputs.build_ios }}
+        run: |
+          mkdir Payload
+          mv build/ios/iphoneos/Runner.app Payload
+          zip -r9 masiro.ipa Payload
+      - name: Upload iOS artifacts
+        if: ${{ github.event_name != 'pull_request' && inputs.build_ios && !inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: masiro.ipa
