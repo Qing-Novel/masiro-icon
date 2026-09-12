@@ -3,296 +3,191 @@ name: Release Build Manual
 on:
   workflow_dispatch:
     inputs:
-      logLevel:
-        description: 'Log level'
+      build_android:
+        description: 'Build Android APK'
         required: true
-        default: 'warning'
-        type: choice
-        options:
-          - info
-          - warning
-          - debug
+        type: boolean
+        default: true
+      build_linux:
+        description: 'Build Linux tarball'
+        required: true
+        type: boolean
+        default: true
+      build_windows:
+        description: 'Build Windows zip (project untested)'
+        required: true
+        type: boolean
+        default: false
+      build_macos:
+        description: 'Build macOS dmg (project untested)'
+        required: true
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Dry run: upload as workflow artifacts only, do NOT create release'
+        required: true
+        type: boolean
+        default: true
 
 env:
-  CI_FLUTTER_VERSION: "3.24.5"
-  BUILD_TOOLS_VERSION: "34.0.0"
-  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+  FLUTTER_VERSION: "3.41.5"
 
 jobs:
-  android-fat:
-    name: Android | Build Fat Full APK
+  # ------------------------------------------------------------------
+  # Linux
+  # ------------------------------------------------------------------
+  build-linux:
+    if: ${{ inputs.build_linux }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: false
-
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: "temurin"
-          java-version: "17"
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.CI_FLUTTER_VERSION }}
-          cache: true
-
-      - name: Install system libs
-        run: |
-          sudo apt update -y
-          sudo apt install -y curl unzip xz-utils zip libglu1-mesa clang cmake ninja-build pkg-config libayatana-appindicator3-dev libgtk-3-dev liblzma-dev libstdc++-12-dev
-
-      - name: Get short commit hash
+      - name: Set short hash
         run: echo "COMMIT_SHORT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-
-      - name: Flutter pub get
-        run: flutter pub get
-
-      - name: Build full fat release APK
-        run: flutter build apk --release --no-tree-shake-icons
-
-      - name: Prepare output folder
-        run: |
-          mkdir -p fat-apk
-          cp build/app/outputs/flutter-apk/app-release.apk fat-apk/masiro-${{ env.COMMIT_SHORT_HASH }}-fat-release.apk
-          ls -la fat-apk
-
-      - name: Locate Android build tools
-        run: |
-          export ANDROID_BUILD_TOOLS=${{ env.ANDROID_SDK_ROOT }}/build-tools/${{ env.BUILD_TOOLS_VERSION }}
-          echo "ANDROID_BUILD_TOOLS=$ANDROID_BUILD_TOOLS" >> $GITHUB_ENV
-          ls "$ANDROID_BUILD_TOOLS"/
-          test -f "$ANDROID_BUILD_TOOLS/zipalign"
-          test -f "$ANDROID_BUILD_TOOLS/apksigner"
-
-      - name: Decode keystore base64 & parse key properties
-        run: |
-          echo "${{ secrets.KEYSTORE }}" | base64 --decode > fat-apk/sign.keystore
-          echo "${{ secrets.KEY_PROPERTIES }}" > fat-apk/key.properties
-          # 读取密钥信息
-          source fat-apk/key.properties
-          echo "KS_ALIAS=$keyAlias" >> $GITHUB_ENV
-          echo "KS_PASSWORD=$storePassword" >> $GITHUB_ENV
-          echo "KEY_PASSWORD=$keyPassword" >> $GITHUB_ENV
-          ls -la fat-apk
-
-      - name: Zipalign and sign fat apk
-        run: |
-          cd fat-apk
-          ANDROID_BUILD_TOOLS=${{ env.ANDROID_BUILD_TOOLS }}
-          src_apk=masiro-${{ env.COMMIT_SHORT_HASH }}-fat-release.apk
-          "${ANDROID_BUILD_TOOLS}/zipalign" -v 4 "$src_apk" "${src_apk%.apk}-aligned.apk"
-          "${ANDROID_BUILD_TOOLS}/apksigner" sign \
-            --ks sign.keystore \
-            --ks-key-alias ${{ env.KS_ALIAS }} \
-            --ks-pass pass:${{ env.KS_PASSWORD }} \
-            --key-pass pass:${{ env.KEY_PASSWORD }} \
-            --out "${src_apk%.apk}-signed.apk" \
-            "${src_apk%.apk}-aligned.apk"
-          ls -la .
-
-      - name: Upload to release
-        uses: ncipollo/release-action@v1
+      - uses: subosito/flutter-action@v2
         with:
-          allowUpdates: true
-          artifacts: "fat-apk/masiro-${{ env.COMMIT_SHORT_HASH }}-fat-release-signed.apk"
-          tag: ${{ env.COMMIT_SHORT_HASH }}
-          prerelease: true
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev
+      - run: flutter pub get
+      - run: flutter build linux --release
+      - name: Pack tarball
+        run: |
+          cd build/linux/x64/release
+          mv bundle masiro-${{ env.COMMIT_SHORT_HASH }}-linux
+          tar -czf masiro-${{ env.COMMIT_SHORT_HASH }}-linux.tar.gz masiro-${{ env.COMMIT_SHORT_HASH }}-linux
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tarball
+          path: build/linux/x64/release/masiro-${{ env.COMMIT_SHORT_HASH }}-linux.tar.gz
 
-  android-split:
-    name: Android | Build Split ABI APK
+  # ------------------------------------------------------------------
+  # Android (使用 KEYSTORE / KEY_PROPERTIES)
+  # ------------------------------------------------------------------
+  build-android:
+    if: ${{ inputs.build_android }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: false
-
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
+      - name: Set short hash
+        run: echo "COMMIT_SHORT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+      - uses: actions/setup-java@v4
         with:
           distribution: "temurin"
           java-version: "17"
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.CI_FLUTTER_VERSION }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
-
-      - name: Install system libs
+      - name: Setup Android signing
         run: |
-          sudo apt update -y
-          sudo apt install -y curl unzip xz-utils zip libglu1-mesa clang cmake ninja-build pkg-config libayatana-appindicator3-dev libgtk-3-dev liblzma-dev libstdc++-12-dev
-
-      - name: Get short commit hash
-        run: echo "COMMIT_SHORT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-      - name: Set release dir env
-        run: echo "RELEASE_DIR=split-apk" >> $GITHUB_ENV
-
-      - name: Flutter pub get
-        run: flutter pub get
-
-      - name: Build split per abi APK
-        run: flutter build apk --split-per-abi --no-tree-shake-icons
-
-      - name: Copy & rename split apks
+          echo "${{ secrets.KEYSTORE }}" | base64 --decode > android/app/masiro-release.jks
+          echo "${{ secrets.KEY_PROPERTIES }}" > android/key.properties
+      - run: flutter pub get
+      - name: Build APKs
+        run: flutter build apk --release --split-per-abi
+      - name: Rename APKs
         run: |
-          mkdir -p ${{ env.RELEASE_DIR }}
-          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ${{ env.RELEASE_DIR }}
-          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ${{ env.RELEASE_DIR }}
-          cd ${{ env.RELEASE_DIR }}
-          mv app-arm64-v8a-release.apk masiro-${{ env.COMMIT_SHORT_HASH }}-arm64-v8a-release.apk
-          mv app-armeabi-v7a-release.apk masiro-${{ env.COMMIT_SHORT_HASH }}-armeabi-v7a-release.apk
-          ls -la .
-          cd ..
-
-      - name: Locate Android build tools
-        run: |
-          export ANDROID_BUILD_TOOLS=${{ env.ANDROID_SDK_ROOT }}/build-tools/${{ env.BUILD_TOOLS_VERSION }}
-          echo "ANDROID_BUILD_TOOLS=$ANDROID_BUILD_TOOLS" >> $GITHUB_ENV
-          ls "$ANDROID_BUILD_TOOLS"/
-          test -f "$ANDROID_BUILD_TOOLS/zipalign"
-          test -f "$ANDROID_BUILD_TOOLS/apksigner"
-
-      - name: Decode keystore base64 & parse key properties
-        run: |
-          echo "${{ secrets.KEYSTORE }}" | base64 --decode > ${{ env.RELEASE_DIR }}/sign.keystore
-          echo "${{ secrets.KEY_PROPERTIES }}" > ${{ env.RELEASE_DIR }}/key.properties
-          source ${{ env.RELEASE_DIR }}/key.properties
-          echo "KS_ALIAS=$keyAlias" >> $GITHUB_ENV
-          echo "KS_PASSWORD=$storePassword" >> $GITHUB_ENV
-          echo "KEY_PASSWORD=$keyPassword" >> $GITHUB_ENV
-          ls -la ${{ env.RELEASE_DIR }}
-
-      - name: Zipalign + apksigner sign split apks
-        run: |
-          cd ${{ env.RELEASE_DIR }}
-          ANDROID_BUILD_TOOLS=${{ env.ANDROID_BUILD_TOOLS }}
-          for src_apk in masiro-*-release.apk; do
-            echo "===== Processing $src_apk ====="
-            "${ANDROID_BUILD_TOOLS}/zipalign" -v 4 "$src_apk" "${src_apk%.apk}-aligned.apk"
-            "${ANDROID_BUILD_TOOLS}/apksigner" sign \
-              --ks sign.keystore \
-              --ks-key-alias ${{ env.KS_ALIAS }} \
-              --ks-pass pass:${{ env.KS_PASSWORD }} \
-              --key-pass pass:${{ env.KEY_PASSWORD }} \
-              --out "${src_apk%.apk}-signed.apk" \
-              "${src_apk%.apk}-aligned.apk"
-            echo "Signed file: ${src_apk%.apk}-signed.apk"
-          done
-          ls -la .
-
-      - name: Upload split apks to release
-        uses: ncipollo/release-action@v1
+          cd build/app/outputs/flutter-apk
+          mv app-arm64-v8a-release.apk masiro-${{ env.COMMIT_SHORT_HASH }}-arm64-v8a.apk
+          mv app-armeabi-v7a-release.apk masiro-${{ env.COMMIT_SHORT_HASH }}-armeabi-v7a.apk
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
         with:
-          allowUpdates: true
-          artifacts: "${{ env.RELEASE_DIR }}/masiro-${{ env.COMMIT_SHORT_HASH }}-*-release-signed.apk"
-          tag: ${{ env.COMMIT_SHORT_HASH }}
-          prerelease: true
+          name: android-apks
+          path: |
+            build/app/outputs/flutter-apk/masiro-${{ env.COMMIT_SHORT_HASH }}-arm64-v8a.apk
+            build/app/outputs/flutter-apk/masiro-${{ env.COMMIT_SHORT_HASH }}-armeabi-v7a.apk
 
-  build-windows-app:
-    name: Windows | Build Release
+  # ------------------------------------------------------------------
+  # Windows (项目 README 标注“未测试”，按需启用)
+  # ------------------------------------------------------------------
+  build-windows:
+    if: ${{ inputs.build_windows }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: false
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - name: Set short hash
+        shell: pwsh
+        run: echo "COMMIT_SHORT_HASH=$((git rev-parse --short HEAD))" >> $env:GITHUB_ENV
+      - uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.CI_FLUTTER_VERSION }}
-          cache: true
-
-      - name: Get short commit hash
-        run: echo "COMMIT_SHORT_HASH=$(git rev-parse --short HEAD)" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Flutter pub get
-        run: flutter pub get
-
-      - name: Build windows release
-        run: flutter build windows --release
-
-      - name: Zip windows package
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - run: flutter pub get
+      - run: flutter build windows --release
+      - name: Pack zip
+        shell: pwsh
         run: |
-          $artifactName="masiro-$env:COMMIT_SHORT_HASH-windows.zip"
-          Compress-Archive -Path build\windows\x64\release\* -DestinationPath $artifactName
-          echo "BUILD_ARTIFACT=$artifactName" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Upload to release
-        uses: ncipollo/release-action@v1
+          cd build/windows/x64/runner
+          Rename-Item Release masiro-${{ env.COMMIT_SHORT_HASH }}-windows
+          Compress-Archive -Path masiro-${{ env.COMMIT_SHORT_HASH }}-windows -DestinationPath masiro-${{ env.COMMIT_SHORT_HASH }}-windows.zip
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
         with:
-          allowUpdates: true
-          artifacts: ${{ env.BUILD_ARTIFACT }}
-          tag: ${{ env.COMMIT_SHORT_HASH }}
-          prerelease: true
+          name: windows-zip
+          path: build/windows/x64/runner/masiro-${{ env.COMMIT_SHORT_HASH }}-windows.zip
 
-  build-macos-app:
-    name: macOS | Build Release
+  # ------------------------------------------------------------------
+  # macOS (项目 README 标注“未测试”，按需启用)
+  # ------------------------------------------------------------------
+  build-macos:
+    if: ${{ inputs.build_macos }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: false
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.CI_FLUTTER_VERSION }}
-          cache: true
-
-      - name: Get short commit hash
+      - name: Set short hash
         run: echo "COMMIT_SHORT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - run: flutter pub get
+      - run: flutter build macos --release
+      - name: Upload macOS .app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: build/macos/Build/Products/Release/masiro.app
 
-      - name: Flutter pub get
-        run: flutter pub get
-
-      - name: Build macos release
-        run: flutter build macos --release
-
-      - name: Zip macos package
+  # ------------------------------------------------------------------
+  # Release（dry_run = false 时，汇总所有 artifact 并创建预发布）
+  # ------------------------------------------------------------------
+  release:
+    if: ${{ !inputs.dry_run && always() && (inputs.build_linux || inputs.build_android || inputs.build_windows || inputs.build_macos) }}
+    needs: [build-linux, build-android, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set short hash
+        run: echo "COMMIT_SHORT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+      - name: Flatten artifacts
         run: |
-          artifact="masiro-${{ env.COMMIT_SHORT_HASH }}-macos.zip"
-          cd build/macos/Build/Products/Release
-          zip -r "../../../../$artifact" *.app
-          cd ../../../../
-          echo "BUILD_ARTIFACT=$artifact" >> $GITHUB_ENV
-
-      - name: Upload to release
+          mkdir -p release-files
+          find all-artifacts -type f \( -name "*.tar.gz" -o -name "*.apk" -o -name "*.zip" -o -name "*.dmg" \) -exec cp {} release-files/ \;
+          ls -la release-files/
+      - name: Create Prerelease
         uses: ncipollo/release-action@v1
         with:
           allowUpdates: true
-          artifacts: ${{ env.BUILD_ARTIFACT }}
+          artifacts: "release-files/*"
           tag: ${{ env.COMMIT_SHORT_HASH }}
           prerelease: true
-
-  build-ios-app:
-    name: iOS | Build Release IPA
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: false
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.CI_FLUTTER_VERSION }}
-          cache: true
-
-      - name: Get short commit hash
-        run: echo "COMMIT_SHORT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-
-      - name: Flutter pub get
-        run: flutter pub get
+          token: ${{ secrets.GITHUB_TOKEN }}r pub get
 
       - name: Build iOS release ipa
         run: flutter build ipa --release --export-method ad-hoc
