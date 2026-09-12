@@ -42,6 +42,7 @@ jobs:
   # Linux
   # ------------------------------------------------------------------
   build-linux:
+    name: Build Linux
     if: ${{ inputs.build_linux }}
     runs-on: ubuntu-latest
     steps:
@@ -80,6 +81,7 @@ jobs:
   # Android (使用 KEYSTORE / KEY_PROPERTIES)
   # ------------------------------------------------------------------
   build-android:
+    name: Build Android
     if: ${{ inputs.build_android }}
     runs-on: ubuntu-latest
     steps:
@@ -118,6 +120,7 @@ jobs:
   # Windows
   # ------------------------------------------------------------------
   build-windows:
+    name: Build Windows
     if: ${{ inputs.build_windows }}
     runs-on: windows-latest
     steps:
@@ -125,6 +128,8 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
+      - name: Regenerate Windows platform files
+        run: flutter create --platforms=windows --project-name masiro_icon .
       - run: flutter clean
       - run: flutter pub get
       - name: Build Windows
@@ -152,6 +157,7 @@ jobs:
   # macOS + iOS (同一台 macos-latest)
   # ------------------------------------------------------------------
   build-macos-and-ios:
+    name: Build MacOS and iOS
     if: ${{ inputs.build_macos || inputs.build_ios }}
     runs-on: macos-latest
     steps:
@@ -162,7 +168,7 @@ jobs:
           cache: true
       - name: Ensure platform files
         run: |
-          flutter create --platforms=macos,ios .
+          flutter create --platforms=macos,ios --project-name masiro_icon .
           flutter clean
           flutter pub get
 
@@ -201,9 +207,10 @@ jobs:
           path: masiro.ipa
 
   # ------------------------------------------------------------------
-  # Release (dry_run = false 时汇总并创建 prerelease)
+  # Release
   # ------------------------------------------------------------------
   release:
+    name: Release
     if: ${{ !inputs.dry_run && always() && (inputs.build_linux || inputs.build_android || inputs.build_windows || inputs.build_macos || inputs.build_ios) }}
     needs: [build-linux, build-android, build-windows, build-macos-and-ios]
     runs-on: ubuntu-latest
