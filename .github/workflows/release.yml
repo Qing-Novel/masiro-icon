@@ -78,7 +78,7 @@ jobs:
           path: build/linux/x64/release/masiro-linux.tar.gz
 
   # ------------------------------------------------------------------
-  # Android
+  # Android (使用 KEYSTORE / KEY_PROPERTIES)
   # ------------------------------------------------------------------
   build-android:
     name: Build Android
@@ -117,7 +117,7 @@ jobs:
             build/app/outputs/flutter-apk/masiro-armeabi_v7a.apk
 
   # ------------------------------------------------------------------
-  # Windows (固定 windows-2022)
+  # Windows (固定 windows-2022 以匹配 VS 2022 生成器)
   # ------------------------------------------------------------------
   build-windows:
     name: Build Windows
@@ -154,7 +154,7 @@ jobs:
           path: build/windows/x64/runner/masiro-windows.zip
 
   # ------------------------------------------------------------------
-  # macOS + iOS
+  # macOS + iOS (同一台 macos-latest)
   # ------------------------------------------------------------------
   build-macos-and-ios:
     name: Build MacOS and iOS
@@ -181,6 +181,17 @@ jobs:
         run: |
           brew install python-setuptools
           npm install -g appdmg
+          APP_PATH=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -n 1)
+          echo "Found app: $APP_PATH"
+          cat > appdmg.json <<EOF
+          {
+            "title": "masiro",
+            "contents": [
+              { "x": 448, "y": 344, "type": "link", "path": "/Applications" },
+              { "x": 192, "y": 344, "type": "file", "path": "$APP_PATH" }
+            ]
+          }
+          EOF
           appdmg appdmg.json build/masiro-universal.dmg
       - name: Upload MacOS artifacts
         if: ${{ inputs.build_macos }}
@@ -207,7 +218,7 @@ jobs:
           path: masiro.ipa
 
   # ------------------------------------------------------------------
-  # Release
+  # Release (dry_run = false 时汇总并创建 prerelease)
   # ------------------------------------------------------------------
   release:
     name: Release
