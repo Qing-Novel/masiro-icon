@@ -23,6 +23,11 @@ on:
         required: true
         type: boolean
         default: false
+      build_ios:
+        description: 'Build iOS ipa (no codesign)'
+        required: true
+        type: boolean
+        default: false
       dry_run:
         description: 'Dry run: upload as workflow artifacts only, do NOT create release'
         required: true
@@ -137,10 +142,10 @@ jobs:
           path: build/windows/x64/runner/masiro-${{ env.COMMIT_SHORT_HASH }}-windows.zip
 
   # ------------------------------------------------------------------
-  # macOS (项目 README 标注“未测试”，按需启用)
+  # macOS + iOS (合并到一个 macos runner，参考原 yml 结构)
   # ------------------------------------------------------------------
-  build-macos:
-    if: ${{ inputs.build_macos }}
+  build-macos-and-ios:
+    if: ${{ inputs.build_macos || inputs.build_ios }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -153,19 +158,41 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
       - run: flutter pub get
-      - run: flutter build macos --release
+
+      # ---------- macOS ----------
+      - name: Build macOS
+        if: ${{ inputs.build_macos }}
+        run: flutter build macos --release
       - name: Upload macOS .app bundle
+        if: ${{ inputs.build_macos }}
         uses: actions/upload-artifact@v4
         with:
           name: macos-app
           path: build/macos/Build/Products/Release/masiro.app
 
+      # ---------- iOS ----------
+      - name: Build iOS (no codesign)
+        if: ${{ inputs.build_ios }}
+        run: flutter build ios --release --no-codesign
+      - name: Pack iOS ipa
+        if: ${{ inputs.build_ios }}
+        run: |
+          mkdir -p Payload
+          mv build/ios/iphoneos/Runner.app Payload/
+          zip -r9 masiro-${{ env.COMMIT_SHORT_HASH }}.ipa Payload
+      - name: Upload iOS artifact
+        if: ${{ inputs.build_ios }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: masiro-${{ env.COMMIT_SHORT_HASH }}.ipa
+
   # ------------------------------------------------------------------
   # Release（dry_run = false 时，汇总所有 artifact 并创建预发布）
   # ------------------------------------------------------------------
   release:
-    if: ${{ !inputs.dry_run && always() && (inputs.build_linux || inputs.build_android || inputs.build_windows || inputs.build_macos) }}
-    needs: [build-linux, build-android, build-windows, build-macos]
+    if: ${{ !inputs.dry_run && always() && (inputs.build_linux || inputs.build_android || inputs.build_windows || inputs.build_macos || inputs.build_ios) }}
+    needs: [build-linux, build-android, build-windows, build-macos-and-ios]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -178,7 +205,7 @@ jobs:
       - name: Flatten artifacts
         run: |
           mkdir -p release-files
-          find all-artifacts -type f \( -name "*.tar.gz" -o -name "*.apk" -o -name "*.zip" -o -name "*.dmg" \) -exec cp {} release-files/ \;
+          find all-artifacts -type f \( -name "*.tar.gz" -o -name "*.apk" -o -name "*.zip" -o -name "*.dmg" -o -name "*.ipa" \) -exec cp {} release-files/ \;
           ls -la release-files/
       - name: Create Prerelease
         uses: ncipollo/release-action@v1
@@ -187,21 +214,4 @@ jobs:
           artifacts: "release-files/*"
           tag: ${{ env.COMMIT_SHORT_HASH }}
           prerelease: true
-          token: ${{ secrets.GITHUB_TOKEN }}r pub get
-
-      - name: Build iOS release ipa
-        run: flutter build ipa --release --export-method ad-hoc
-
-      - name: Prepare artifact
-        run: |
-          artifact="masiro-${{ env.COMMIT_SHORT_HASH }}-ios.ipa"
-          cp build/ios/ipa/*.ipa $artifact
-          echo "BUILD_ARTIFACT=$artifact" >> $GITHUB_ENV
-
-      - name: Upload to release
-        uses: ncipollo/release-action@v1
-        with:
-          allowUpdates: true
-          artifacts: ${{ env.BUILD_ARTIFACT }}
-          tag: ${{ env.COMMIT_SHORT_HASH }}
-          prerelease: true
+          token: ${{ secrets.GITHUB_TOKEN }}
