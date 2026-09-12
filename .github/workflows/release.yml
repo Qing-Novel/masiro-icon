@@ -78,7 +78,7 @@ jobs:
           path: build/linux/x64/release/masiro-linux.tar.gz
 
   # ------------------------------------------------------------------
-  # Android (使用 KEYSTORE / KEY_PROPERTIES)
+  # Android
   # ------------------------------------------------------------------
   build-android:
     name: Build Android
@@ -117,12 +117,12 @@ jobs:
             build/app/outputs/flutter-apk/masiro-armeabi_v7a.apk
 
   # ------------------------------------------------------------------
-  # Windows
+  # Windows (固定 windows-2022)
   # ------------------------------------------------------------------
   build-windows:
     name: Build Windows
     if: ${{ inputs.build_windows }}
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -154,7 +154,7 @@ jobs:
           path: build/windows/x64/runner/masiro-windows.zip
 
   # ------------------------------------------------------------------
-  # macOS + iOS (同一台 macos-latest)
+  # macOS + iOS
   # ------------------------------------------------------------------
   build-macos-and-ios:
     name: Build MacOS and iOS
@@ -175,7 +175,7 @@ jobs:
       # ---------- macOS ----------
       - name: Build MacOS
         if: ${{ inputs.build_macos }}
-        run: flutter build macos --release
+        run: flutter build macos --release --no-tree-shake-icons
       - name: Packing MacOS dmg
         if: ${{ inputs.build_macos }}
         run: |
@@ -192,7 +192,7 @@ jobs:
       # ---------- iOS ----------
       - name: Build iOS ipa
         if: ${{ inputs.build_ios }}
-        run: flutter build ios --release --no-codesign
+        run: flutter build ios --release --no-codesign --no-tree-shake-icons
       - name: Packing iOS
         if: ${{ inputs.build_ios }}
         run: |
