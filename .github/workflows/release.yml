@@ -14,12 +14,12 @@ on:
         type: boolean
         default: true
       build_windows:
-        description: 'Build Windows zip (project untested)'
+        description: 'Build Windows zip'
         required: true
         type: boolean
         default: false
       build_macos:
-        description: 'Build macOS dmg (project untested)'
+        description: 'Build macOS dmg'
         required: true
         type: boolean
         default: false
@@ -35,7 +35,7 @@ on:
         default: true
 
 env:
-  FLUTTER_VERSION: "3.41.5"
+  FLUTTER_VERSION: "3.24.5"
 
 jobs:
   # ------------------------------------------------------------------
@@ -46,10 +46,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Set short hash
-        run: echo "COMMIT_SHORT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -57,19 +53,28 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libayatana-appindicator3-dev
+      - run: flutter clean
       - run: flutter pub get
-      - run: flutter build linux --release
-      - name: Pack tarball
+      - name: Build Linux
+        run: flutter build linux --release
+      - name: Pre Packing
         run: |
-          cd build/linux/x64/release
-          mv bundle masiro-${{ env.COMMIT_SHORT_HASH }}-linux
-          tar -czf masiro-${{ env.COMMIT_SHORT_HASH }}-linux.tar.gz masiro-${{ env.COMMIT_SHORT_HASH }}-linux
+          pushd build/linux/x64/release/
+          mv bundle masiro
+          popd
+      - name: Pack Linux tarball
+        uses: thedoctor0/zip-release@master
+        with:
+          type: "tar"
+          filename: masiro-linux.tar.gz
+          directory: build/linux/x64/release/
+          path: masiro
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-tarball
-          path: build/linux/x64/release/masiro-${{ env.COMMIT_SHORT_HASH }}-linux.tar.gz
+          path: build/linux/x64/release/masiro-linux.tar.gz
 
   # ------------------------------------------------------------------
   # Android (使用 KEYSTORE / KEY_PROPERTIES)
@@ -79,10 +84,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Set short hash
-        run: echo "COMMIT_SHORT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
       - uses: actions/setup-java@v4
         with:
           distribution: "temurin"
@@ -95,100 +96,112 @@ jobs:
         run: |
           echo "${{ secrets.KEYSTORE }}" | base64 --decode > android/app/masiro-release.jks
           echo "${{ secrets.KEY_PROPERTIES }}" > android/key.properties
+      - run: flutter clean
       - run: flutter pub get
-      - name: Build APKs
-        run: flutter build apk --release --split-per-abi
-      - name: Rename APKs
+      - name: Build Android
+        run: flutter build apk --release --split-per-abi --no-tree-shake-icons
+      - name: Pack Android apk
         run: |
-          cd build/app/outputs/flutter-apk
-          mv app-arm64-v8a-release.apk masiro-${{ env.COMMIT_SHORT_HASH }}-arm64-v8a.apk
-          mv app-armeabi-v7a-release.apk masiro-${{ env.COMMIT_SHORT_HASH }}-armeabi-v7a.apk
+          pushd build/app/outputs/flutter-apk/
+          mv app-arm64-v8a-release.apk masiro-arm64_v8a.apk
+          mv app-armeabi-v7a-release.apk masiro-armeabi_v7a.apk
+          popd
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
         with:
           name: android-apks
           path: |
-            build/app/outputs/flutter-apk/masiro-${{ env.COMMIT_SHORT_HASH }}-arm64-v8a.apk
-            build/app/outputs/flutter-apk/masiro-${{ env.COMMIT_SHORT_HASH }}-armeabi-v7a.apk
+            build/app/outputs/flutter-apk/masiro-arm64_v8a.apk
+            build/app/outputs/flutter-apk/masiro-armeabi_v7a.apk
 
   # ------------------------------------------------------------------
-  # Windows (项目 README 标注“未测试”，按需启用)
+  # Windows
   # ------------------------------------------------------------------
   build-windows:
     if: ${{ inputs.build_windows }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Set short hash
-        shell: pwsh
-        run: echo "COMMIT_SHORT_HASH=$((git rev-parse --short HEAD))" >> $env:GITHUB_ENV
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
+      - run: flutter clean
       - run: flutter pub get
-      - run: flutter build windows --release
-      - name: Pack zip
+      - name: Build Windows
+        run: flutter build windows --release
+      - name: Pre Packing
         shell: pwsh
         run: |
           cd build/windows/x64/runner
-          Rename-Item Release masiro-${{ env.COMMIT_SHORT_HASH }}-windows
-          Compress-Archive -Path masiro-${{ env.COMMIT_SHORT_HASH }}-windows -DestinationPath masiro-${{ env.COMMIT_SHORT_HASH }}-windows.zip
+          Rename-Item Release masiro
+          cd ../../../../
+      - name: Pack Windows tarball
+        uses: thedoctor0/zip-release@master
+        with:
+          type: "zip"
+          filename: masiro-windows.zip
+          directory: build/windows/x64/runner
+          path: masiro
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-zip
-          path: build/windows/x64/runner/masiro-${{ env.COMMIT_SHORT_HASH }}-windows.zip
+          path: build/windows/x64/runner/masiro-windows.zip
 
   # ------------------------------------------------------------------
-  # macOS + iOS (合并到一个 macos runner，参考原 yml 结构)
+  # macOS + iOS (同一台 macos-latest)
   # ------------------------------------------------------------------
   build-macos-and-ios:
     if: ${{ inputs.build_macos || inputs.build_ios }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Set short hash
-        run: echo "COMMIT_SHORT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
-      - run: flutter pub get
+      - name: Ensure platform files
+        run: |
+          flutter create --platforms=macos,ios .
+          flutter clean
+          flutter pub get
 
       # ---------- macOS ----------
-      - name: Build macOS
+      - name: Build MacOS
         if: ${{ inputs.build_macos }}
         run: flutter build macos --release
-      - name: Upload macOS .app bundle
+      - name: Packing MacOS dmg
+        if: ${{ inputs.build_macos }}
+        run: |
+          brew install python-setuptools
+          npm install -g appdmg
+          appdmg appdmg.json build/masiro-universal.dmg
+      - name: Upload MacOS artifacts
         if: ${{ inputs.build_macos }}
         uses: actions/upload-artifact@v4
         with:
-          name: macos-app
-          path: build/macos/Build/Products/Release/masiro.app
+          name: macos-dmg
+          path: build/masiro-universal.dmg
 
       # ---------- iOS ----------
-      - name: Build iOS (no codesign)
+      - name: Build iOS ipa
         if: ${{ inputs.build_ios }}
         run: flutter build ios --release --no-codesign
-      - name: Pack iOS ipa
+      - name: Packing iOS
         if: ${{ inputs.build_ios }}
         run: |
-          mkdir -p Payload
-          mv build/ios/iphoneos/Runner.app Payload/
-          zip -r9 masiro-${{ env.COMMIT_SHORT_HASH }}.ipa Payload
-      - name: Upload iOS artifact
+          mkdir Payload
+          mv build/ios/iphoneos/Runner.app Payload
+          zip -r9 masiro.ipa Payload
+      - name: Upload iOS artifacts
         if: ${{ inputs.build_ios }}
         uses: actions/upload-artifact@v4
         with:
           name: ios-ipa
-          path: masiro-${{ env.COMMIT_SHORT_HASH }}.ipa
+          path: masiro.ipa
 
   # ------------------------------------------------------------------
-  # Release（dry_run = false 时，汇总所有 artifact 并创建预发布）
+  # Release (dry_run = false 时汇总并创建 prerelease)
   # ------------------------------------------------------------------
   release:
     if: ${{ !inputs.dry_run && always() && (inputs.build_linux || inputs.build_android || inputs.build_windows || inputs.build_macos || inputs.build_ios) }}
